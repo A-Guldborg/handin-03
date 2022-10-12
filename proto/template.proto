@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+option go_package = "github.com/A-Guldborg/handin-03";
+
+package proto;
+
+service ChittyChat {
+    rpc Join (BasePacket) returns (BasePacket);
+    rpc Message (Content) returns (BasePacket);
+    rpc Leave (BasePacket) returns (BasePacket);
+}
+
+message BasePacket {
+    int64 LamportTimeStamp = 1;
+    string ClientName = 2;
+}
+
+message Content {
+    int64 LamportTimeStamp = 1;
+    string ClientName = 2;
+    string MessageBody = 3;
+}

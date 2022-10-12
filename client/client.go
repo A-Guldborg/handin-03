@@ -1,22 +1,26 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
-	gRPC "github.com/ChrBank/DISYSExercise5/proto"
+	gRPC "github.com/A-Guldborg/handin-03/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 var clientsName = flag.String("name", "default", "Senders name")
 var serverPort = flag.String("server", "5400", "Tcp server")
+var LamportTimeStamp int64 = 1
 
-var server gRPC.TimeSyncClient  //the server
-var ServerConn *grpc.ClientConn //the server connection
+var server gRPC.ChittyChatClient //the server
+var ServerConn *grpc.ClientConn  //the server connection
 
 func main() {
 
@@ -32,11 +36,34 @@ func main() {
 	ConnectToServer()
 	defer ServerConn.Close()
 
+	JoinServer()
+
 	parseInput()
 }
 
+func JoinServer() {
+	server.Join(context.Background(), &gRPC.BasePacket{ClientName: *clientsName, LamportTimeStamp: LamportTimeStamp})
+}
+
 func parseInput() {
-	server.Ping(context.Background(), &gRPC.Ack{ClientName: *clientsName})
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("-> ")
+
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			log.Fatal(err)
+		}
+		input = strings.TrimSpace(input)
+
+		log.Print(input) // shut up compiler plz
+		if !conReady(server) {
+			log.Printf("Client %s: Something was wrong with connection :(", *clientsName)
+			continue
+		}
+
+		// Send to server
+	}
 }
 
 func ConnectToServer() {
@@ -54,7 +81,11 @@ func ConnectToServer() {
 		return
 	}
 
-	server = gRPC.NewTimeSyncClient(conn)
+	server = gRPC.NewChittyChatClient(conn)
 	ServerConn = conn
 	log.Println("the connection is: ", conn.GetState().String())
+}
+
+func conReady(s gRPC.ChittyChatClient) bool {
+	return ServerConn.GetState().String() == "READY"
 }
