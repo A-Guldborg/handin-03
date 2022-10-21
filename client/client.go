@@ -56,13 +56,13 @@ func parseInput() {
 		}
 		input = strings.TrimSpace(input)
 
-		log.Print(input) // shut up compiler plz
 		if !conReady(server) {
 			log.Printf("Client %s: Something was wrong with connection :(", *clientsName)
 			continue
 		}
 
 		// Send to server
+		server.Message(context.Background(), &gRPC.Content{ClientName: *clientsName, LamportTimeStamp: LamportTimeStamp, MessageBody: input})
 	}
 }
 
