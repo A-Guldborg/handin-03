@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 
@@ -50,29 +49,13 @@ func main() {
 func (s *Server) Join(ctx context.Context, joinPacket *gRPC.JoinPacket) (*gRPC.ClientId, error) {
 	for i, name := range s.names {
 		if name == joinPacket.ClientName {
+			log.Printf("Name %s is already taken by user id %d\n", name, i)
 			return &gRPC.ClientId{Id: int64(i), Ack: &gRPC.Ack{StatusCode: 409}}, nil
 		}
 	}
 	availableId := &gRPC.ClientId{Id: int64(s.nextId), Ack: &gRPC.Ack{StatusCode: 200}}
 	s.names = append(s.names, joinPacket.ClientName)
 	log.Printf("Name is available, new client given id %d", s.nextId)
-	in := &gRPC.Content{
-		SenderName:  s.names[s.nextId],
-		MessageBody: fmt.Sprintf("%s joined the chat at L(%d)", s.names[s.nextId], 0),
-		BasePacket: &gRPC.BasePacket{
-			Id:               int64(s.nextId),
-			LamportTimeStamp: 0,
-		},
-	}
-
-	go func() {
-		streams := s.channels
-		for _, msgChan := range streams {
-			if msgChan != nil {
-				msgChan <- in
-			}
-		}
-	}()
 	s.nextId = s.nextId + 1
 
 	return availableId, nil
@@ -83,7 +66,25 @@ func (s *Server) GetContentStream(BasePacket *gRPC.BasePacket, stream gRPC.Chitt
 	newChannel := make(chan *gRPC.Content)
 	s.channels = append(s.channels, newChannel)
 
-	log.Println("Server served")
+	joinMsg := &gRPC.Content{
+		SenderName:  "ChittyChat",
+		MessageBody: fmt.Sprintf("%s joined the chat at L(%d)", s.names[BasePacket.Id], 0),
+		BasePacket: &gRPC.BasePacket{
+			Id:               -1,
+			LamportTimeStamp: 0,
+		},
+	}
+
+	go func() {
+		streams := s.channels
+		for _, msgChan := range streams {
+			if msgChan != nil {
+				msgChan <- joinMsg
+			}
+		}
+	}()
+
+	log.Printf("Content stream given to user id %d\n", BasePacket.Id)
 
 	// doing this never closes the stream
 	for {
@@ -103,10 +104,10 @@ func (s *Server) Leave(ctx context.Context, basepacket *gRPC.BasePacket) (*gRPC.
 
 	// Broadcast stuff
 	in := &gRPC.Content{
-		SenderName:  s.names[id],
+		SenderName:  "ChittyChat",
 		MessageBody: fmt.Sprintf("%s left the chat at L(%d)", s.names[id], LamportTimeStamp),
 		BasePacket: &gRPC.BasePacket{
-			Id:               id,
+			Id:               -1,
 			LamportTimeStamp: LamportTimeStamp,
 		},
 	}
@@ -129,32 +130,20 @@ func (s *Server) Leave(ctx context.Context, basepacket *gRPC.BasePacket) (*gRPC.
 	return &gRPC.Ack{StatusCode: 200}, nil
 }
 
-func (s *Server) Message(stream gRPC.ChittyChat_MessageServer) error {
+func (s *Server) Message(ctx context.Context, content *gRPC.Content) (*gRPC.Ack, error) {
 	// Server connection starts
-	log.Println("Server connection started")
+	log.Printf("%d - %s -> %s ", content.BasePacket.LamportTimeStamp, s.names[content.BasePacket.Id], content.MessageBody) // log message
 
-	log.Println("Trying to receive")
-	in, err := stream.Recv()
-	log.Println("message recieved?")
-	if err == io.EOF {
-		return nil // Client stops connection
-	} else if err != nil {
-		return err // Error happened
-	}
-
-	log.Printf("%d - %s -> %s ", in.BasePacket.LamportTimeStamp, s.names[in.BasePacket.Id], in.MessageBody) // log message
-
-	ack := gRPC.Ack{StatusCode: 200}
-	stream.SendAndClose(&ack)
+	ack := &gRPC.Ack{StatusCode: 200}
 
 	go func() {
 		streams := s.channels
 		for _, msgChan := range streams {
 			if msgChan != nil {
-				msgChan <- in
+				msgChan <- content
 			}
 		}
 	}()
 
-	return nil
+	return ack, nil
 }

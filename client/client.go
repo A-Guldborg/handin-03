@@ -30,8 +30,6 @@ func main() {
 
 	flag.Parse()
 
-	fmt.Println("--- join Server ---")
-
 	ConnectToServer()
 	joined := false
 
@@ -80,8 +78,6 @@ func GetContentStream() {
 
 	go func() {
 		for !leftChat {
-			// in, err := client.Recv()
-
 			in := gRPC.Content{}
 
 			err := client.RecvMsg(&in)
@@ -89,13 +85,12 @@ func GetContentStream() {
 				return
 			}
 			if err != nil {
-				log.Fatalf("Failed to receive message from channel joining. \nErr: %v", err)
+				log.Fatalf("Failed to receive message from channel. \nErr: %v", err)
 			}
 
 			if id != in.BasePacket.Id {
 				LamportTimeStamp = Max(in.BasePacket.LamportTimeStamp, LamportTimeStamp) + 1
-
-				fmt.Printf("(%v, L:%d) -> %v \n", in.SenderName, in.BasePacket.LamportTimeStamp, in.MessageBody)
+				log.Printf("(%v, L:%d) -> %v \n", in.SenderName, in.BasePacket.LamportTimeStamp, in.MessageBody)
 			}
 		}
 	}()
@@ -106,12 +101,7 @@ func GetContentStream() {
 }
 
 func sendMessage(message string) {
-	stream, err := server.Message(context.Background())
-
-	if err != nil {
-		log.Printf("Cannot send message: error: %v", err)
-	}
-	msg := gRPC.Content{
+	msg := &gRPC.Content{
 		BasePacket: &gRPC.BasePacket{
 			Id:               id,
 			LamportTimeStamp: LamportTimeStamp,
@@ -119,12 +109,12 @@ func sendMessage(message string) {
 		SenderName:  *clientsName,
 		MessageBody: message,
 	}
-	stream.Send(&msg)
-	LamportTimeStamp++
+	ack, err := server.Message(context.Background(), msg)
 
-	ack, err := stream.CloseAndRecv()
 	if err != nil {
-		fmt.Printf("Error while sending: %s \n", err)
+		log.Printf("Cannot send message: error: %v", err)
+	} else {
+		LamportTimeStamp++
 	}
 
 	if ack.StatusCode >= 400 {
@@ -135,12 +125,20 @@ func sendMessage(message string) {
 func parseInput() {
 	reader := bufio.NewReader(os.Stdin)
 	for !leftChat {
+		validMessage := false
+		var input string
+		var err error
+		for !validMessage {
 
-		// fmt.Print(*clientsName + " -> ")
-		input, err := reader.ReadString('\n')
-		if input == "/leave\n" {
-			OnLeave()
-			return
+			input, err = reader.ReadString('\n')
+			if input == "/leave\n" {
+				OnLeave()
+				return
+			}
+
+			if len(input) > 128 {
+				fmt.Println("Message is too long! the size of the message should be at most 128 characters.")
+			}
 		}
 		// Send to server
 		go sendMessage(input)
@@ -156,18 +154,11 @@ func ConnectToServer() {
 	opts = append(opts, grpc.WithBlock(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	fmt.Printf("Dialing on %s \n", *serverPort)
 	conn, err := grpc.Dial(*serverPort, opts...)
-	fmt.Println("Dialed")
 	if err != nil {
 		log.Fatalf("Fail to dial: %v", err)
 	}
-	fmt.Println("Didn't fail to dial")
-
-	fmt.Println(conn.GetState().String())
 
 	server = gRPC.NewChittyChatClient(conn)
-	if err != nil {
-		log.Fatalf("Fail to dial: %v", err)
-	}
 }
 
 func Max(x, y int64) int64 {
