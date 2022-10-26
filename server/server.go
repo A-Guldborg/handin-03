@@ -16,6 +16,8 @@ type Server struct {
 	gRPC.UnimplementedChittyChatServer
 
 	channels []chan *gRPC.Content
+	names    []string
+	nextId   int
 	port     string
 }
 
@@ -25,6 +27,8 @@ func newServer() *Server {
 	s := &Server{
 		port:     "5400",
 		channels: make([]chan *gRPC.Content, 0),
+		names:    make([]string, 0),
+		nextId:   0,
 	}
 	fmt.Println(s)
 	return s
@@ -43,8 +47,39 @@ func main() {
 	grpcServer.Serve(listener)
 }
 
-func (s *Server) Join(basepacket *gRPC.BasePacket, stream gRPC.ChittyChat_JoinServer) error {
-	// Client joins
+func (s *Server) Join(ctx context.Context, joinPacket *gRPC.JoinPacket) (*gRPC.ClientId, error) {
+	for i, name := range s.names {
+		if name == joinPacket.ClientName {
+			return &gRPC.ClientId{Id: int64(i), Ack: &gRPC.Ack{StatusCode: 409}}, nil
+		}
+	}
+	availableId := &gRPC.ClientId{Id: int64(s.nextId), Ack: &gRPC.Ack{StatusCode: 200}}
+	s.names = append(s.names, joinPacket.ClientName)
+	log.Printf("Name is available, new client given id %d", s.nextId)
+	in := &gRPC.Content{
+		SenderName:  s.names[s.nextId],
+		MessageBody: fmt.Sprintf("%s joined the chat at L(%d)", s.names[s.nextId], 0),
+		BasePacket: &gRPC.BasePacket{
+			Id:               int64(s.nextId),
+			LamportTimeStamp: 0,
+		},
+	}
+
+	go func() {
+		streams := s.channels
+		for _, msgChan := range streams {
+			if msgChan != nil {
+				msgChan <- in
+			}
+		}
+	}()
+	s.nextId = s.nextId + 1
+
+	return availableId, nil
+}
+
+func (s *Server) GetContentStream(BasePacket *gRPC.BasePacket, stream gRPC.ChittyChat_GetContentStreamServer) error {
+	// Client joins with id
 	newChannel := make(chan *gRPC.Content)
 	s.channels = append(s.channels, newChannel)
 
@@ -62,37 +97,37 @@ func (s *Server) Join(basepacket *gRPC.BasePacket, stream gRPC.ChittyChat_JoinSe
 	}
 }
 
-func (s *Server) Leave(ctx context.Context, basepacket *gRPC.BasePacket) (*gRPC.BasePacket, error) {
-	var clientName = basepacket.ClientName
+func (s *Server) Leave(ctx context.Context, basepacket *gRPC.BasePacket) (*gRPC.Ack, error) {
+	var id = basepacket.Id
 	var LamportTimeStamp = basepacket.LamportTimeStamp
 
 	// Broadcast stuff
+	in := &gRPC.Content{
+		SenderName:  s.names[id],
+		MessageBody: fmt.Sprintf("%s left the chat at L(%d)", s.names[id], LamportTimeStamp),
+		BasePacket: &gRPC.BasePacket{
+			Id:               id,
+			LamportTimeStamp: LamportTimeStamp,
+		},
+	}
 
-	log.Printf("%s left the chat at L(%d)", clientName, LamportTimeStamp)
+	go func() {
+		streams := s.channels
+		for _, msgChan := range streams {
+			if msgChan != nil {
+				msgChan <- in
+			}
+		}
+	}()
 
-	return basepacket, nil
+	log.Printf("%s left the chat at L(%d)", s.names[id], LamportTimeStamp)
+	s.channels[id] = nil
+	s.names[id] = ""
+
+	// Close connection to client from serverside
+
+	return &gRPC.Ack{StatusCode: 200}, nil
 }
-
-// func (s *Server) Message(ctx context.Context, message *gRPC.Content) (*gRPC.BasePacket, error) {
-// 	var clientName = message.BasePacket.ClientName
-// 	var LamportTimeStamp = message.BasePacket.LamportTimeStamp
-// 	var body = message.MessageBody
-
-// 	log.Printf("%s joined the chat at L(%d)", clientName, LamportTimeStamp)
-
-// 	// Broadcast stuff
-
-// 	//
-
-// 	log.Printf("%s L(%d): %s", clientName, LamportTimeStamp, body)
-
-// 	var basepacket = gRPC.BasePacket{
-// 		ClientName:       clientName,
-// 		LamportTimeStamp: LamportTimeStamp,
-// 	}
-
-// 	return &basepacket, nil
-// }
 
 func (s *Server) Message(stream gRPC.ChittyChat_MessageServer) error {
 	// Server connection starts
@@ -107,7 +142,7 @@ func (s *Server) Message(stream gRPC.ChittyChat_MessageServer) error {
 		return err // Error happened
 	}
 
-	log.Printf("%d - %s -> %s ", in.BasePacket.LamportTimeStamp, in.BasePacket.ClientName, in.MessageBody) // log message
+	log.Printf("%d - %s -> %s ", in.BasePacket.LamportTimeStamp, s.names[in.BasePacket.Id], in.MessageBody) // log message
 
 	ack := gRPC.Ack{StatusCode: 200}
 	stream.SendAndClose(&ack)
@@ -115,7 +150,9 @@ func (s *Server) Message(stream gRPC.ChittyChat_MessageServer) error {
 	go func() {
 		streams := s.channels
 		for _, msgChan := range streams {
-			msgChan <- in
+			if msgChan != nil {
+				msgChan <- in
+			}
 		}
 	}()
 

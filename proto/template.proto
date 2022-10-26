@@ -5,18 +5,30 @@ option go_package = "github.com/A-Guldborg/handin-03";
 package proto;
 
 service ChittyChat {
-    rpc Join(BasePacket) returns (stream Content);
+    rpc Join(JoinPacket) returns (ClientId);
+    rpc GetContentStream(BasePacket) returns (stream Content);
     rpc Message (stream Content) returns (Ack);
+    rpc Leave(BasePacket) returns (Ack);
+}
+
+message ClientId {
+    int64 id = 1;
+    Ack ack = 2;
+}
+
+message JoinPacket {
+    string ClientName = 1;
 }
 
 message BasePacket {
     int64 LamportTimeStamp = 1;
-    string ClientName = 2;
+    int64 id = 2;
 }
-
+    
 message Content {
     BasePacket BasePacket = 1;
-    string MessageBody = 2;
+    string senderName = 2;
+    string MessageBody = 3;
 }
 
 message Ack {

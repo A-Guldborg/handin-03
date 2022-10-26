@@ -8,9 +8,11 @@ import (
 	"io"
 	"log"
 	"os"
+	"time"
 
 	gRPC "github.com/A-Guldborg/handin-03/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var clientsName = flag.String("name", "default", "Senders name")
@@ -19,65 +21,88 @@ var LamportTimeStamp int64 = 1
 
 var server gRPC.ChittyChatClient //the server
 var ServerConn *grpc.ClientConn  //the server connection
+var id int64
+var leftChat bool
 
 func main() {
 
 	fmt.Println("--- CLIENT APP ---")
-	fmt.Println("Please insert name:")
-	fmt.Scanf("%s", clientsName)
 
 	flag.Parse()
 
 	fmt.Println("--- join Server ---")
 
 	ConnectToServer()
+	joined := false
 
 	fmt.Println("Connected to server")
-	defer ServerConn.Close()
 
-	go JoinServer()
+	for !joined {
+		fmt.Println("Please insert name:")
+		fmt.Scanf("%s", clientsName)
+
+		clientId, _ := server.Join(context.Background(), &gRPC.JoinPacket{ClientName: *clientsName})
+
+		if clientId.Ack.StatusCode == 200 {
+			joined = true
+			id = clientId.Id
+		}
+		if clientId.Ack.StatusCode == 409 {
+			fmt.Printf("Name is already taken by Client with Id: %d", clientId.Id)
+		}
+	}
+	fmt.Println("Successfully connected, use /leave to leave the chat")
+
+	go GetContentStream()
 
 	parseInput()
 }
 
-func JoinServer() {
-	log.Println("Hello world")
+func OnLeave() {
 	pkt := gRPC.BasePacket{
+		Id:               id,
 		LamportTimeStamp: LamportTimeStamp,
-		ClientName:       *clientsName,
 	}
-	client, err := server.Join(context.Background(), &pkt)
+	leftChat = true
+	server.Leave(context.Background(), &pkt)
+}
+
+func GetContentStream() {
+	pkt := gRPC.BasePacket{
+		Id:               id,
+		LamportTimeStamp: LamportTimeStamp,
+	}
+
+	client, err := server.GetContentStream(context.Background(), &pkt)
 	if err != nil {
 		log.Println("Error: " + err.Error())
 	}
 
-	incuming := make(chan struct{})
-
 	go func() {
-		for {
+		for !leftChat {
 			// in, err := client.Recv()
 
 			in := gRPC.Content{}
 
 			err := client.RecvMsg(&in)
 			if err == io.EOF {
-				close(incuming)
 				return
 			}
 			if err != nil {
 				log.Fatalf("Failed to receive message from channel joining. \nErr: %v", err)
 			}
 
-			if *clientsName != in.BasePacket.ClientName {
-				fmt.Printf("MESSAGE: (%v) -> %v \n", in.BasePacket.ClientName, in.MessageBody)
+			if id != in.BasePacket.Id {
+				LamportTimeStamp = Max(in.BasePacket.LamportTimeStamp, LamportTimeStamp) + 1
+
+				fmt.Printf("(%v, L:%d) -> %v \n", in.SenderName, in.BasePacket.LamportTimeStamp, in.MessageBody)
 			}
 		}
 	}()
 
-	<-incuming
-
-	// confirmation, _ := client.Recv()
-	// log.Println(confirmation.MessageBody)
+	for !leftChat {
+		time.Sleep(2 * time.Minute)
+	}
 }
 
 func sendMessage(message string) {
@@ -88,72 +113,52 @@ func sendMessage(message string) {
 	}
 	msg := gRPC.Content{
 		BasePacket: &gRPC.BasePacket{
-			ClientName:       *clientsName,
-			LamportTimeStamp: 1 + 1,
+			Id:               id,
+			LamportTimeStamp: LamportTimeStamp,
 		},
+		SenderName:  *clientsName,
 		MessageBody: message,
 	}
 	stream.Send(&msg)
+	LamportTimeStamp++
 
 	ack, err := stream.CloseAndRecv()
 	if err != nil {
 		fmt.Printf("Error while sending: %s \n", err)
-	} else {
-		fmt.Printf("Message sent: %v \n", ack)
+	}
+
+	if ack.StatusCode >= 400 {
+		fmt.Printf("Something went wrong sending a message")
 	}
 }
 
 func parseInput() {
 	reader := bufio.NewReader(os.Stdin)
-	defer ServerConn.Close()
-	for {
+	for !leftChat {
 
-		fmt.Print(*clientsName + " -> ")
+		// fmt.Print(*clientsName + " -> ")
 		input, err := reader.ReadString('\n')
-
-		if input == "leave" {
+		if input == "/leave\n" {
+			OnLeave()
 			return
 		}
-
+		// Send to server
 		go sendMessage(input)
 
 		if err != nil {
 			log.Fatal(err)
 		}
-		// Send to server
-		// server.Message(context.Background(), &gRPC.Content{BasePacket: &gRPC.BasePacket{ClientName: *clientsName, LamportTimeStamp: LamportTimeStamp}, MessageBody: input})
-		LamportTimeStamp++
 	}
 }
 
-// func ConnectToServer() {
-// 	var opts []grpc.DialOption
-// 	opts = append(opts, grpc.WithBlock(), grpc.WithInsecure())
-
-// 	//use context for timeout on the connection
-// 	timeContext, cancel := context.WithTimeout(context.Background(), time.Second)
-// 	defer cancel() //cancel the connection when we are done
-
-// 	log.Printf("client %s: Attempts to dial on port %s\n", *clientsName, *serverPort)
-// 	conn, err := grpc.DialContext(timeContext, fmt.Sprintf(":%s", *serverPort), opts...)
-// 	if err != nil {
-// 		log.Printf("Fail to Dial : %v", err)
-// 		return
-// 	}
-
-// 	server = gRPC.NewChittyChatClient(conn)
-// 	ServerConn = conn
-// 	log.Println("the connection is: ", conn.GetState().String())
-// }
-
 func ConnectToServer() {
 	var opts []grpc.DialOption
-	opts = append(opts, grpc.WithBlock(), grpc.WithInsecure())
+	opts = append(opts, grpc.WithBlock(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	fmt.Printf("Dialing on %s \n", *serverPort)
 	conn, err := grpc.Dial(*serverPort, opts...)
 	fmt.Println("Dialed")
 	if err != nil {
-		log.Fatalf("Fail to dail: %v", err)
+		log.Fatalf("Fail to dial: %v", err)
 	}
 	fmt.Println("Didn't fail to dial")
 
@@ -161,6 +166,13 @@ func ConnectToServer() {
 
 	server = gRPC.NewChittyChatClient(conn)
 	if err != nil {
-		log.Fatalf("Fail to dail: %v", err)
+		log.Fatalf("Fail to dial: %v", err)
 	}
+}
+
+func Max(x, y int64) int64 {
+	if x < y {
+		return y
+	}
+	return x
 }
