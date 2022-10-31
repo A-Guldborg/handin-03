@@ -138,14 +138,15 @@ func parseInput() {
 
 			if len(input) > 128 {
 				fmt.Println("Message is too long! the size of the message should be at most 128 characters.")
-			}
+			} else if err != nil {
+        fmt.Println("Error reading input")
+        log.Fatal(err)
+      } else {
+        validMessage = true
+      }
 		}
 		// Send to server
 		go sendMessage(input)
-
-		if err != nil {
-			log.Fatal(err)
-		}
 	}
 }
 
