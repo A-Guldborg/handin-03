@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 
 	gRPC "github.com/A-Guldborg/handin-03/proto"
 	"google.golang.org/grpc"
@@ -36,13 +39,34 @@ func newServer() *Server {
 func main() {
 	// Start server up to be listened to
 	listener, err := net.Listen("tcp", "localhost:"+*port)
+
+	// Enable logging to file
+	f, err := os.OpenFile("server.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("error opening logfile: %v", err)
+	}
+
+	log.SetOutput(f)
+
 	log.Printf("Listening on port %s \n", *port)
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 	grpcServer := grpc.NewServer()
-
 	gRPC.RegisterChittyChatServer(grpcServer, newServer())
+
+	// exit gracefully when interrupting
+	c := make(chan os.Signal, 2)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		fmt.Println("Exiting gracefully...")
+		f.Close()
+		listener.Close()
+		grpcServer.GracefulStop()
+		os.Exit(0)
+	}()
+
 	grpcServer.Serve(listener)
 }
 
@@ -92,7 +116,7 @@ func (s *Server) GetContentStream(BasePacket *gRPC.BasePacket, stream gRPC.Chitt
 		case <-stream.Context().Done():
 			return nil
 		case msg := <-newChannel:
-			log.Printf("GO ROUTINE (got message): %v \n", msg)
+			log.Printf("'%s' got message: %v \n", s.names[BasePacket.Id], msg)
 			stream.Send(msg)
 		}
 	}
